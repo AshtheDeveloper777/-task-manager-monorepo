@@ -6,7 +6,6 @@ import {
   TaskFilter,
   TaskStatus,
   TaskPriority,
-  INITIAL_TASKS,
 } from '@repo/common-types';
 import { createClient } from '@supabase/supabase-js';
 import { Header } from '@/components/Header';
@@ -15,8 +14,14 @@ import { FilterBar } from '@/components/FilterBar';
 import { TaskList } from '@/components/TaskList';
 import { TaskFormModal } from '@/components/TaskFormModal';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+// Direct Supabase configuration with fallbacks for production deployment
+const supabaseUrl =
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  'https://hdoejjtkbxyjloezpqhn.supabase.co';
+const supabaseAnonKey =
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhkb2VqanRrYnh5amxvZXpwcWhuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA0NjMwMzIsImV4cCI6MjA4NjAzOTAzMn0.MmbDWLtesd40Qd3A4qaAWvzYsdlwd9PulypSbaI7cuQ';
+
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 const mapStatusToDb = (status: string): string => {
@@ -42,19 +47,21 @@ export default function Home() {
   });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [loading, setLoading] = useState(true);
 
+  // 1. Fetch ALL tasks exclusively from Supabase DB
   const fetchTasks = async () => {
-    if (!supabaseUrl || !supabaseAnonKey) {
-      setTasks(INITIAL_TASKS);
-      return;
-    }
+    setLoading(true);
     try {
       const { data, error } = await supabase
         .from('tasks')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!error && data) {
+      if (error) {
+        console.error('Supabase fetch error:', error.message);
+        setTasks([]);
+      } else if (data) {
         const mappedTasks: Task[] = data.map((row: any) => ({
           id: row.id,
           title: row.title,
@@ -67,7 +74,10 @@ export default function Home() {
         setTasks(mappedTasks);
       }
     } catch (e) {
-      console.error(e);
+      console.error('Fetch error:', e);
+      setTasks([]);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -93,6 +103,7 @@ export default function Home() {
     });
   }, [tasks, filter]);
 
+  // 2. Save task ONLY into Supabase DB
   const handleSaveTask = async (taskData: {
     title: string;
     description: string;
@@ -103,16 +114,7 @@ export default function Home() {
     const dbStatus = mapStatusToDb(taskData.status);
 
     if (editingTask) {
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === editingTask.id
-            ? { ...t, ...taskData, updatedAt: new Date().toISOString() }
-            : t
-        )
-      );
-      setEditingTask(null);
-
-      await supabase
+      const { error } = await supabase
         .from('tasks')
         .update({
           title: taskData.title,
@@ -120,46 +122,48 @@ export default function Home() {
           status: dbStatus,
         })
         .eq('id', editingTask.id);
+
+      if (error) {
+        alert('Supabase Update Error: ' + error.message);
+      } else {
+        setEditingTask(null);
+        await fetchTasks();
+      }
     } else {
-      const tempId = `task-${Date.now()}`;
-      const newTask: Task = {
-        id: tempId,
-        ...taskData,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      setTasks((prev) => [newTask, ...prev]);
+      const { error } = await supabase.from('tasks').insert([
+        {
+          title: taskData.title,
+          description: taskData.description,
+          status: dbStatus,
+        },
+      ]);
 
-      const { data, error } = await supabase
-        .from('tasks')
-        .insert([
-          {
-            title: taskData.title,
-            description: taskData.description,
-            status: dbStatus,
-          },
-        ])
-        .select();
-
-      if (data && data[0]) {
-        fetchTasks();
+      if (error) {
+        alert('Supabase Insert Error: ' + error.message);
+      } else {
+        await fetchTasks();
       }
     }
   };
 
+  // 3. Update Status in Supabase DB
   const handleStatusChange = async (id: string, newStatus: TaskStatus) => {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, status: newStatus, updatedAt: new Date().toISOString() } : t))
-    );
-    await supabase
+    const { error } = await supabase
       .from('tasks')
       .update({ status: mapStatusToDb(newStatus) })
       .eq('id', id);
+
+    if (!error) {
+      await fetchTasks();
+    }
   };
 
+  // 4. Delete from Supabase DB
   const handleDeleteTask = async (id: string) => {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
-    await supabase.from('tasks').delete().eq('id', id);
+    const { error } = await supabase.from('tasks').delete().eq('id', id);
+    if (!error) {
+      await fetchTasks();
+    }
   };
 
   const handleOpenEditModal = (task: Task) => {
@@ -189,13 +193,19 @@ export default function Home() {
           onReset={handleResetFilters}
         />
 
-        <TaskList
-          tasks={filteredTasks}
-          onEdit={handleOpenEditModal}
-          onDelete={handleDeleteTask}
-          onStatusChange={handleStatusChange}
-          onOpenCreateModal={handleOpenCreateModal}
-        />
+        {loading ? (
+          <div className="text-center py-12 text-slate-400">
+            <p>Connecting to Supabase Database...</p>
+          </div>
+        ) : (
+          <TaskList
+            tasks={filteredTasks}
+            onEdit={handleOpenEditModal}
+            onDelete={handleDeleteTask}
+            onStatusChange={handleStatusChange}
+            onOpenCreateModal={handleOpenCreateModal}
+          />
+        )}
       </main>
 
       <TaskFormModal
