@@ -19,6 +19,20 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+const mapStatusToDb = (status: string): string => {
+  const s = status.toUpperCase();
+  if (s === 'COMPLETED') return 'completed';
+  if (s === 'IN_PROGRESS') return 'in_progress';
+  return 'pending';
+};
+
+const mapStatusFromDb = (status: string | null): TaskStatus => {
+  const s = status?.toLowerCase();
+  if (s === 'completed') return 'COMPLETED';
+  if (s === 'in_progress') return 'IN_PROGRESS';
+  return 'TODO';
+};
+
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [filter, setFilter] = useState<TaskFilter>({
@@ -40,27 +54,20 @@ export default function Home() {
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!error && data && data.length > 0) {
+      if (!error && data) {
         const mappedTasks: Task[] = data.map((row: any) => ({
           id: row.id,
           title: row.title,
           description: row.description || '',
-          status:
-            row.status?.toUpperCase() === 'COMPLETED'
-              ? 'COMPLETED'
-              : row.status?.toUpperCase() === 'IN_PROGRESS'
-              ? 'IN_PROGRESS'
-              : 'TODO',
+          status: mapStatusFromDb(row.status),
           priority: (row.priority?.toUpperCase() as TaskPriority) || 'MEDIUM',
           createdAt: row.created_at || new Date().toISOString(),
           updatedAt: row.updated_at || new Date().toISOString(),
         }));
         setTasks(mappedTasks);
-      } else {
-        setTasks(INITIAL_TASKS);
       }
     } catch (e) {
-      setTasks(INITIAL_TASKS);
+      console.error(e);
     }
   };
 
@@ -93,6 +100,8 @@ export default function Home() {
     priority: TaskPriority;
     dueDate?: string;
   }) => {
+    const dbStatus = mapStatusToDb(taskData.status);
+
     if (editingTask) {
       setTasks((prev) =>
         prev.map((t) =>
@@ -102,13 +111,13 @@ export default function Home() {
         )
       );
       setEditingTask(null);
-      
+
       await supabase
         .from('tasks')
         .update({
           title: taskData.title,
           description: taskData.description,
-          status: taskData.status.toLowerCase(),
+          status: dbStatus,
         })
         .eq('id', editingTask.id);
     } else {
@@ -121,13 +130,13 @@ export default function Home() {
       };
       setTasks((prev) => [newTask, ...prev]);
 
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('tasks')
         .insert([
           {
             title: taskData.title,
             description: taskData.description,
-            status: taskData.status.toLowerCase(),
+            status: dbStatus,
           },
         ])
         .select();
@@ -142,7 +151,10 @@ export default function Home() {
     setTasks((prev) =>
       prev.map((t) => (t.id === id ? { ...t, status: newStatus, updatedAt: new Date().toISOString() } : t))
     );
-    await supabase.from('tasks').update({ status: newStatus.toLowerCase() }).eq('id', id);
+    await supabase
+      .from('tasks')
+      .update({ status: mapStatusToDb(newStatus) })
+      .eq('id', id);
   };
 
   const handleDeleteTask = async (id: string) => {
