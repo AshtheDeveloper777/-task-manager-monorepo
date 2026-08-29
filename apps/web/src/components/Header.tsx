@@ -18,7 +18,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenCreateModal }) => {
           <div>
             <h1 className="text-xl font-bold tracking-tight text-white">Task Manager</h1>
             <p className="text-xs text-slate-400">
-              Manage your tasks efficiently and stay organized
+              Manage your tasks efficiently  stay organized
             </p>
           </div>
         </div>

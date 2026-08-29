@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@repo/common-types": "workspace:*",
+    "@supabase/supabase-js": "^2.112.4",
     "clsx": "^2.1.1",
     "lucide-react": "^0.395.0",
     "next": "^14.2.5",

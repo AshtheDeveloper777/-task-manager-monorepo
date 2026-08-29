@@ -8,11 +8,16 @@ import {
   TaskPriority,
   INITIAL_TASKS,
 } from '@repo/common-types';
+import { createClient } from '@supabase/supabase-js';
 import { Header } from '@/components/Header';
 import { StatsDashboard } from '@/components/StatsDashboard';
 import { FilterBar } from '@/components/FilterBar';
 import { TaskList } from '@/components/TaskList';
 import { TaskFormModal } from '@/components/TaskFormModal';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -23,31 +28,46 @@ export default function Home() {
   });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
 
-  // Load initial tasks from local storage or shared package seed
-  useEffect(() => {
-    const saved = localStorage.getItem('app_tasks_storage');
-    if (saved) {
-      try {
-        setTasks(JSON.parse(saved));
-      } catch (e) {
+  const fetchTasks = async () => {
+    if (!supabaseUrl || !supabaseAnonKey) {
+      setTasks(INITIAL_TASKS);
+      return;
+    }
+    try {
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        const mappedTasks: Task[] = data.map((row: any) => ({
+          id: row.id,
+          title: row.title,
+          description: row.description || '',
+          status:
+            row.status?.toUpperCase() === 'COMPLETED'
+              ? 'COMPLETED'
+              : row.status?.toUpperCase() === 'IN_PROGRESS'
+              ? 'IN_PROGRESS'
+              : 'TODO',
+          priority: (row.priority?.toUpperCase() as TaskPriority) || 'MEDIUM',
+          createdAt: row.created_at || new Date().toISOString(),
+          updatedAt: row.updated_at || new Date().toISOString(),
+        }));
+        setTasks(mappedTasks);
+      } else {
         setTasks(INITIAL_TASKS);
       }
-    } else {
+    } catch (e) {
       setTasks(INITIAL_TASKS);
     }
-    setIsLoaded(true);
+  };
+
+  useEffect(() => {
+    fetchTasks();
   }, []);
 
-  // Save to local storage on task changes
-  useEffect(() => {
-    if (isLoaded) {
-      localStorage.setItem('app_tasks_storage', JSON.stringify(tasks));
-    }
-  }, [tasks, isLoaded]);
-
-  // Filter tasks based on current filter state
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
       if (filter.status && filter.status !== 'ALL' && task.status !== filter.status) {
@@ -66,8 +86,7 @@ export default function Home() {
     });
   }, [tasks, filter]);
 
-  // Handle task creation / update
-  const handleSaveTask = (taskData: {
+  const handleSaveTask = async (taskData: {
     title: string;
     description: string;
     status: TaskStatus;
@@ -78,36 +97,57 @@ export default function Home() {
       setTasks((prev) =>
         prev.map((t) =>
           t.id === editingTask.id
-            ? {
-                ...t,
-                ...taskData,
-                updatedAt: new Date().toISOString(),
-              }
+            ? { ...t, ...taskData, updatedAt: new Date().toISOString() }
             : t
         )
       );
       setEditingTask(null);
+      
+      await supabase
+        .from('tasks')
+        .update({
+          title: taskData.title,
+          description: taskData.description,
+          status: taskData.status.toLowerCase(),
+        })
+        .eq('id', editingTask.id);
     } else {
+      const tempId = `task-${Date.now()}`;
       const newTask: Task = {
-        id: `task-${Date.now()}`,
+        id: tempId,
         ...taskData,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       setTasks((prev) => [newTask, ...prev]);
+
+      const { data } = await supabase
+        .from('tasks')
+        .insert([
+          {
+            title: taskData.title,
+            description: taskData.description,
+            status: taskData.status.toLowerCase(),
+          },
+        ])
+        .select();
+
+      if (data && data[0]) {
+        fetchTasks();
+      }
     }
   };
 
-  // Handle status toggle
-  const handleStatusChange = (id: string, newStatus: TaskStatus) => {
+  const handleStatusChange = async (id: string, newStatus: TaskStatus) => {
     setTasks((prev) =>
       prev.map((t) => (t.id === id ? { ...t, status: newStatus, updatedAt: new Date().toISOString() } : t))
     );
+    await supabase.from('tasks').update({ status: newStatus.toLowerCase() }).eq('id', id);
   };
 
-  // Handle deletion
-  const handleDeleteTask = (id: string) => {
+  const handleDeleteTask = async (id: string) => {
     setTasks((prev) => prev.filter((t) => t.id !== id));
+    await supabase.from('tasks').delete().eq('id', id);
   };
 
   const handleOpenEditModal = (task: Task) => {
@@ -129,17 +169,14 @@ export default function Home() {
       <Header onOpenCreateModal={handleOpenCreateModal} />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Analytics Dashboard */}
         <StatsDashboard tasks={tasks} />
 
-        {/* Filter & Search Bar */}
         <FilterBar
           filter={filter}
           onFilterChange={setFilter}
           onReset={handleResetFilters}
         />
 
-        {/* Task Grid */}
         <TaskList
           tasks={filteredTasks}
           onEdit={handleOpenEditModal}
@@ -149,7 +186,6 @@ export default function Home() {
         />
       </main>
 
-      {/* Task Form Modal */}
       <TaskFormModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -157,7 +193,6 @@ export default function Home() {
         initialTask={editingTask}
       />
 
-      {/* Footer */}
       <footer className="border-t border-white/5 py-6 bg-[#060910]">
         <div className="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p>© 2026 Task Manager Application</p>
